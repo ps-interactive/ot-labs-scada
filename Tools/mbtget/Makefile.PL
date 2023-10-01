@@ -7,7 +7,7 @@ WriteMakefile(
     VERSION_FROM      => 'scripts/mbtget', # finds $VERSION
     EXE_FILES         => [qw(scripts/mbtget)],
     LICENSE           => 'MIT',
-    MIN_PERL_VERSION  => '5.006_001',
+    MIN_PERL_VERSION  => '5.006',
     META_MERGE => {
         'meta-spec' => { version => 2 },
         resources => {
