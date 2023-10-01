@@ -1,0 +1,440 @@
+#!/usr/bin/perl -w
+
+# Client ModBus / TCP class 1
+#     Version: 1.5.0
+#     Website: https://github.com/sourceperl/mbtget
+#        Date: 30/10/2014
+#     License: MIT
+# Description: Client ModBus / TCP command line
+#              Support functions 3 and 16 (class 0)
+#              1,2,4,5,6 (Class 1)
+#     Charset: us-ascii, unix end of line
+
+# TODO: 1,2,3 and 4 functions: check the number of words received
+
+use strict;
+use IO::Socket;
+use IO::Select;
+use Socket qw(getaddrinfo);
+
+# constant
+our $VERSION            = '1.5.0';
+my  $MBGET_USAGE        =
+'usage : mbtget [-hvdsf] [-2c]
+               [-u unit_id] [-a address] [-n number_value]
+               [-r[12347]] [-w5 bit_value] [-w6 word_value]
+               [-p port] [-t timeout] serveur
+
+command line :
+  -h                    : show this help message
+  -v                    : show version
+  -d                    : set dump mode (show tx/rx frame in hex)
+  -s                    : set script mode (csv on stdout)
+  -r1                   : read bit(s) (function 1)
+  -r2                   : read bit(s) (function 2)
+  -r3                   : read word(s) (function 3)
+  -r4                   : read word(s) (function 4)
+  -w5 bit_value         : write a bit (function 5)
+  -w6 word_value        : write a word (function 6)
+  -f                    : set floating point value
+  -2c                   : set "two\'s complement" mode for register read
+  -hex                  : show value in hex (default is decimal)
+  -u unit_id            : set the modbus "unit id"
+  -p port_number        : set TCP port (default 502)
+  -a modbus_address     : set modbus address (default 0)
+  -n value_number       : number of values to read
+  -t timeout            : set timeout seconds (default is 5s)';
+
+# parameters ModBus / TCP
+my $MODBUS_PORT                                 = 502;
+# functions codes
+my $READ_COILS                                  = 0x01;
+my $READ_DISCRETE_INPUTS                        = 0x02;
+my $READ_HOLDING_REGISTERS                      = 0x03;
+my $READ_INPUT_REGISTERS                        = 0x04;
+my $WRITE_SINGLE_COIL                           = 0x05;
+my $WRITE_SINGLE_REGISTER                       = 0x06;
+# exceptions codes
+my $EXP_ILLEGAL_FUNCTION                        = 0x01;
+my $EXP_DATA_ADDRESS                            = 0x02;
+my $EXP_DATA_VALUE                              = 0x03;
+my $EXP_SLAVE_DEVICE_FAILURE                    = 0x04;
+my $EXP_ACKNOWLEDGE                             = 0x05;
+my $EXP_SLAVE_DEVICE_BUSY                       = 0x06;
+my $EXP_MEMORY_PARITY_ERROR                     = 0x08;
+my $EXP_GATEWAY_PATH_UNAVAILABLE                = 0x0A;
+my $EXP_GATEWAY_TARGET_DEVICE_FAILED_TO_RESPOND = 0x0B;
+
+# default value
+my $opt_server                                  = 'localhost';
+my $opt_server_port                             = $MODBUS_PORT;
+my $opt_timeout                                 = 5;
+my $opt_dump_mode                               = 0;
+my $opt_script_mode                             = 0;
+my $opt_unit_id                                 = 1;
+my $opt_mb_fc                                   = $READ_HOLDING_REGISTERS;
+my $opt_mb_ad                                   = 0;
+my $opt_mb_nb                                   = 1;
+my $opt_bit_value                               = 0;
+my $opt_word_value                              = 0;
+my $opt_2c                                      = 0;
+my $opt_ieee                                    = 0;
+my $opt_hex_ad                                  = 0;
+my $opt_hex_value                               = 0;
+
+# build IPv4/v6 regexp
+my $IPv4 = "((25[0-5]|2[0-4][0-9]|[0-1]?[0-9]{1,2})[.](25[0-5]|2[0-4][0-9]|".
+           "[0-1]?[0-9]{1,2})[.](25[0-5]|2[0-4][0-9]|[0-1]?[0-9]{1,2})".
+           "[.](25[0-5]|2[0-4][0-9]|[0-1]?[0-9]{1,2}))";
+my $G = "[0-9a-fA-F]{1,4}";
+
+my @tail = ( ":",
+             "(:($G)?|$IPv4)",
+             ":($IPv4|$G(:$G)?|)",
+             "(:$IPv4|:$G(:$IPv4|(:$G){0,2})|:)",
+             "((:$G){0,2}(:$IPv4|(:$G){1,2})|:)",
+             "((:$G){0,3}(:$IPv4|(:$G){1,2})|:)",
+             "((:$G){0,4}(:$IPv4|(:$G){1,2})|:)" );
+
+my $IPv4_re = qr/$IPv4/;
+my $IPv6_re = $G;
+$IPv6_re = "$G:($IPv6_re|$_)" for @tail;
+$IPv6_re = qq/:(:$G){0,5}((:$G){1,2}|:$IPv4)|$IPv6_re/;
+$IPv6_re =~ s/\(/(?:/g;
+$IPv6_re = qr/$IPv6_re/;
+
+# parse command line args
+while(defined($_ = shift @ARGV)) {
+  /^-h$/   and do {print $MBGET_USAGE."\n"; exit 0;};
+  /^-v$/   and do {print 'version: '.$VERSION."\n"; exit 0;};
+  /^-d$/   and do {$opt_dump_mode = 1; next;};
+  /^-s$/   and do {$opt_script_mode = 1; next;};
+  /^-2c$/  and do {$opt_2c = 1; next;};
+  /^-f$/   and do {$opt_ieee = 1; next;};
+  /^-hex$/ and do {$opt_hex_value = 1; next;};
+  /^-r1$/  and do {$opt_mb_fc = $READ_COILS; next;};
+  /^-r2$/  and do {$opt_mb_fc = $READ_DISCRETE_INPUTS; next;};
+  /^-r3$/  and do {$opt_mb_fc = $READ_HOLDING_REGISTERS; next;};
+  /^-r4$/  and do {$opt_mb_fc = $READ_INPUT_REGISTERS; next;};
+  ## bit value
+  /^-w5$/  and do {
+    $opt_mb_fc = $WRITE_SINGLE_COIL;
+    $_ = shift @ARGV;
+    if (($_ eq '0') || ($_ eq '1')) {
+      $opt_bit_value = $_; next;
+    } else {
+      print STDERR 'option "-w5": bit_value = 0 or 1'."\n";
+      exit 1;
+    }
+  };
+  ## word value
+  /^-w6$/  and do {
+    $opt_mb_fc = $WRITE_SINGLE_REGISTER;
+    $_ = shift @ARGV;
+    if ((/^\d{1,5}$/) && ($_ <= 65535) && ($_ >= 0)) {
+      $opt_word_value = $_; next;
+    } elsif ((/^0x[a-fA-F0-9]{1,4}$/) && (hex($_) >= 0)) {
+      $opt_word_value = hex($_); next;
+    } else {
+      print STDERR 'option "-w6": 0 <= word_value <= 65535'."\n";
+      exit 1;
+    }
+  };
+  ## unit id
+  /^-u$/  and do {
+    $_ = shift @ARGV;
+    if ((/^\d{1,3}$/) && ($_ <= 255) && ($_ > 0)) {
+      $opt_unit_id = $_; next;
+    } elsif ((/^0x[a-fA-F0-9]{1,2}$/) && (hex($_) > 0)) {
+      $opt_unit_id = hex($_); next;
+    } else {
+      print STDERR 'option "-u": 1 <= unit_id <= 255'."\n";
+      exit 1;
+    }
+  };
+  ## tcp port
+  /^-p$/ and do {
+    $_ = shift @ARGV;
+    if ((/^\d{1,5}$/) && ($_ <= 65535) && ($_ > 0)) {
+      $opt_server_port = $_; next;
+    } elsif ((/^0x[a-fA-F0-9]{1,4}$/) && (hex($_) > 0)) {
+      $opt_server_port = hex($_); next;
+    } else {
+      print STDERR 'option "-p": 1 <= port_number <= 65535.'."\n";
+      exit 1;
+    }
+  };
+  ## modbus address
+  /^-a$/ and do {
+    $_ = shift @ARGV;
+    if ((/^\d{1,5}$/) && ($_ <= 65535)) {
+      $opt_mb_ad = $_; next;
+    } elsif ((/^0x[a-fA-F0-9]{1,4}$/)) {
+      $opt_mb_ad = hex($_);
+      $opt_hex_ad = 1;
+      next;
+    }else {
+      print STDERR 'option "-a": 0 <= modbus_address <= 65535'."\n";
+      exit 1;
+    }
+  };
+  ## number value
+  /^-n$/ and do {
+    $_ = shift @ARGV;
+    if ((/^\d{1,3}$/) && ($_ <= 125) && ($_ > 0)) {
+      $opt_mb_nb = $_; next;
+    } elsif ((/^0x[a-fA-F0-9]{1,2}$/) && (hex($_) <= 125) && (hex($_) > 0)) {
+      $opt_mb_nb = hex($_); next;
+    } else {
+      print STDERR 'option "-n": 1 <= value_number <= 125'."\n";
+      exit 1;
+    }
+  };
+  ## timeout
+  /^-t$/ and do {
+    $_ = shift @ARGV;
+    if (/^\d{1,3}$/ && ($_ < 120) && ($_ > 0)) {
+      $opt_timeout = $_;
+      next;
+    } else {
+      print STDERR 'option "-t": timeout < 120s'."\n";
+      exit 1;
+    }
+  };
+  ## hostname or IP of the server
+  (/^$IPv6_re$/ or /^$IPv4_re$/ or /^[a-z][a-z0-9\.\-]+$/) and do {
+    $opt_server = $_;
+    next;
+  };
+  ## invalid option
+  /^.*$/ and do {
+    print STDERR 'invalid option "'.$_.'" (use -h for help)'."\n";
+    exit 1;
+  };
+} # end of parse of the command line
+
+# *** Managing Dependencies (after analysis command line) ***
+# if floating point mode : a value is 2 x 16 bits words
+if ($opt_ieee) {
+  if (($opt_mb_nb *= 2) > 125) {
+    print STDERR 'option "-n" and "-f": 1 <= nb_var <= 62'."\n";
+    exit 1;
+  }
+  if (!(($opt_mb_fc == $READ_HOLDING_REGISTERS)
+     || ($opt_mb_fc == $READ_INPUT_REGISTERS))) {
+      print STDERR 'option "-f": not compatible with function '.$opt_mb_fc."\n";
+      exit 1;
+  }
+}
+
+# *** network exchange ***
+# DNS resolve, open TCP socket
+my %hints = (socktype => SOCK_STREAM);
+my ($err, @res) = getaddrinfo($opt_server, ($opt_server_port, \%hints));
+if ($err) {
+  print STDERR "Cannot getaddrinfo - $err - server: $opt_server\n";
+  exit 1;
+}
+
+my $server;
+
+foreach my $ai (@res) {
+  my $candidate = IO::Socket->new();
+  $candidate->socket($ai->{family}, $ai->{socktype}, $ai->{protocol}) or next;
+  $candidate->connect($ai->{addr}) or next;
+  $server = $candidate;
+  last;
+}
+
+if (! $server) {
+  print STDERR 'server connect ['.$opt_server.']:'.
+               $opt_server_port.' failed'."\n";
+  exit 2;
+}
+
+# build a request
+# header
+my $tx_buffer;
+my $tx_hd_tr_id   = int(rand 65535);
+my $tx_hd_pr_id   = 0;
+my $tx_hd_length;
+my $tx_hd_unit_id = $opt_unit_id;
+# body
+my $tx_bd_fc      = $opt_mb_fc;
+my $tx_bd_ad      = $opt_mb_ad;
+## read frames
+if (($opt_mb_fc == $READ_COILS) ||
+    ($opt_mb_fc == $READ_DISCRETE_INPUTS) ||
+    ($opt_mb_fc == $READ_HOLDING_REGISTERS) ||
+    ($opt_mb_fc == $READ_INPUT_REGISTERS)) {
+  $tx_hd_length  = 6;
+  my $tx_bd_nb  = $opt_mb_nb;
+  $tx_buffer = pack("nnnCCnn", $tx_hd_tr_id, $tx_hd_pr_id,
+                               $tx_hd_length, $tx_hd_unit_id,
+                               $tx_bd_fc, $tx_bd_ad, $tx_bd_nb);
+## write a bit frame
+} elsif ($opt_mb_fc == $WRITE_SINGLE_COIL) {
+  $tx_hd_length  = 6;
+  my $tx_bd_bit_value = ($opt_bit_value == 1) ? 0xFF : 0x00;
+  my $tx_bd_padding   = 0;
+  $tx_buffer = pack("nnnCCnCC", $tx_hd_tr_id, $tx_hd_pr_id,
+                                $tx_hd_length, $tx_hd_unit_id,
+                                $tx_bd_fc, $tx_bd_ad,
+                                $tx_bd_bit_value, $tx_bd_padding);
+## write a word frame
+} elsif ($opt_mb_fc == $WRITE_SINGLE_REGISTER) {
+  $tx_hd_length  = 6;
+  my $tx_bd_word_value = $opt_word_value;
+  $tx_buffer = pack("nnnCCnn", $tx_hd_tr_id, $tx_hd_pr_id,
+                               $tx_hd_length, $tx_hd_unit_id,
+                               $tx_bd_fc, $tx_bd_ad,
+                               $tx_bd_word_value);
+}
+# send request
+send($server, $tx_buffer, 0);
+# dump manager
+dump_frame('Tx', $tx_buffer) if ($opt_dump_mode);
+# response wait
+my $s = IO::Select->new();
+$s->add($server);
+if (!$s->can_read($opt_timeout)) {
+  close $server;
+  print STDERR 'receive timeout'."\n";
+  exit 1;
+}
+# receive header
+my ($rx_frame, $rx_buffer, $rx_body, $rx_hd_tr_id, $rx_hd_pr_id, $rx_hd_length, $rx_hd_unit_id,
+    $rx_bd_fc, $rx_bd_bc, $rx_bd_data, @rx_disp_data);
+recv($server, $rx_buffer, 7, 0); $rx_frame = $rx_buffer;
+# header decoding
+($rx_hd_tr_id, $rx_hd_pr_id, $rx_hd_length, $rx_hd_unit_id) = unpack "nnnC", $rx_buffer;
+# is header correct ?
+if (!(($rx_hd_tr_id || $rx_hd_pr_id || $rx_hd_length || $rx_hd_unit_id) &&
+      ($rx_hd_tr_id == $tx_hd_tr_id) && ($rx_hd_pr_id == 0) &&
+      ($rx_hd_length < 256) && ($rx_hd_unit_id == $tx_hd_unit_id))) {
+  close $server;
+  dump_frame('Rx', $rx_frame) if ($opt_dump_mode);
+  print STDERR 'error in receive frame'."\n";
+  exit 1;
+}
+# receive body
+recv($server, $rx_buffer, $rx_hd_length-1, 0);
+$rx_frame .= $rx_buffer;
+close $server;
+# dump manager
+dump_frame('Rx', $rx_frame) if ($opt_dump_mode);
+# body decoding
+($rx_bd_fc, $rx_body) = unpack "Ca*", $rx_buffer;
+# *** display result ***
+# check except status
+if ($rx_bd_fc > 0x80) {
+  # display except code
+  my $rx_except_code;
+  ($rx_except_code) = unpack "C", $rx_body;
+  print 'exception (code '.$rx_except_code.')'."\n";
+} else {
+  # processing result for each functions codes
+  if (($opt_mb_fc == $READ_COILS) || ($opt_mb_fc == $READ_DISCRETE_INPUTS)) {
+  ## read bit
+    my $bit_str;
+    ($rx_bd_bc, $bit_str) = unpack "Cb*", $rx_body;
+    @rx_disp_data = split //, $bit_str;
+    $#rx_disp_data = $opt_mb_nb - 1;
+    disp_data(@rx_disp_data);
+  } elsif (($opt_mb_fc == $READ_HOLDING_REGISTERS) ||
+           ($opt_mb_fc == $READ_INPUT_REGISTERS)) {
+  ## read word
+    my $rx_read_word_data;
+    ($rx_bd_bc, $rx_read_word_data) = unpack "Ca*", $rx_body;
+    # manage floating point display (IEEE mode)
+    if ($opt_ieee) {
+      # read 32-bits floatting point
+      @rx_disp_data = unpack 'f*', pack 'L*', unpack 'N*', $rx_read_word_data;
+      disp_data(@rx_disp_data);
+    } else {
+      # read 16-bits word
+      @rx_disp_data = unpack 'n*', $rx_read_word_data;
+      # if two's complement set (-2c mode) ! not compatible with hex display
+      if ($opt_2c and !$opt_hex_value) {
+        $_ -= ($_ & 2**15) *2 for (@rx_disp_data);
+      }
+      disp_data(@rx_disp_data);
+    }
+  } elsif (($opt_mb_fc == $WRITE_SINGLE_COIL)) {
+  ## write a bit
+    my ($rx_bd_ad, $rx_bit_value);
+    ($rx_bd_ad, $rx_bit_value) = unpack "nC", $rx_body;
+    $rx_bit_value = ($rx_bit_value == 0xFF);
+    if ($rx_bit_value == $opt_bit_value) {
+      print 'bit write ok'."\n";
+    } else {
+      print 'bit write error'."\n";
+    }
+  } elsif (($opt_mb_fc == $WRITE_SINGLE_REGISTER)) {
+  ## write a word
+    my ($rx_bd_ad, $rx_word_value);
+    ($rx_bd_ad, $rx_word_value) = unpack "nn", $rx_body;
+    if ($rx_word_value == $opt_word_value) {
+      print 'word write ok'."\n";
+    } else {
+      print 'word write error'."\n";
+    }
+  }
+}
+
+# *** misc sub ***
+# display ModBus/TCP frame ("[header]body")
+sub dump_frame {
+  my ($frame_name, $frame) = @_;
+  print $frame_name."\n";
+  my @frame_bytes = unpack("C*", $frame);
+  my $i = 0;
+  print "[";
+  foreach my $byte (@frame_bytes) {
+     printf "%02X", $byte;
+     print "]" if ($i++ == 6);
+     print " ";
+  }
+  print "\n\n";
+}
+
+# display receive data
+sub disp_data {
+  # display format ?
+  if ($opt_script_mode) {
+    # CSV format for script usage
+    foreach (@_) {
+      if ($opt_ieee) {
+        printf '%0.2f;', $_;
+      } else {
+        printf '%05d;', $_;
+      }
+    }
+    print "\n";
+  } else {
+    # console format for human readable
+    print 'values:'."\n";
+    my $nb = 0; my $base_addr = $opt_mb_ad;
+    my $disp_format;
+    $disp_format = '%3d (ad %05d): ';
+    $disp_format = '%3d (ad 0x%04x): ' if ($opt_hex_ad);
+    if ((!$opt_hex_value) and $opt_ieee)  {
+      $disp_format .= '%0.6f';
+    } elsif ($opt_hex_value and $opt_ieee) {
+      $disp_format .= '0x%08x';
+    } elsif ($opt_hex_value) {
+      $disp_format .= '0x%04x';
+    } else {
+      $disp_format .= '%5d';
+    }
+    foreach (@_) {
+      printf $disp_format."\n", ++$nb, $base_addr, $_;
+      $base_addr++;
+      $base_addr++ if ($opt_ieee);
+    }
+  }
+}
+
+1;
+
+__END__
