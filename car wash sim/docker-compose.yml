@@ -1,0 +1,30 @@
+version: '3'
+services: 
+    database:
+        container_name: mysql
+        image: mysql/mysql-server:5.7
+        ports:
+            - "3306:3306"
+        environment: 
+            - MYSQL_ROOT_PASSWORD=root
+            - MYSQL_USER=root
+            - MYSQL_PASSWORD=root
+            - MYSQL_DATABASE=scadalts
+        expose: ["3306"]
+        volumes:
+            -   ./docker/volumes/databases:/home/
+    scadalts:
+        image: scadalts/scadalts:latest
+        ports: 
+            - "8080:8080"
+        depends_on: 
+            - database
+        expose: ["8080", "8000"]
+        links:
+            - database:database
+    openplc:
+        image: turzum/openplc:latest
+        ports: 
+            - "8000:8000"
+            - "502:502"
+        expose: ["8000", "502"]
