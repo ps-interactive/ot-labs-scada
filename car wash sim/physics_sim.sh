@@ -27,7 +27,7 @@ while :
 do
   station_finished=$(mbtget -a $2 -r1)
   complete=${station_finished: -1}
-  if [ $complete -eq 1 ]
+  if [ $complete == 1 ]
   then
     break
   else
@@ -43,7 +43,7 @@ sleep 2 # This is a transit delay between stations while the conveyor oeprates
 echo "Resetting all coils to zero"
 reset
 
-# Manually start - not needed when HMI is used
+# Manually start
 echo "Press master start button"
 master_start
 
@@ -74,7 +74,7 @@ do
 
     # Drying cycle
     echo "Starting drying cycle"
-    #station_operation 17 24
+    station_operation 17 24
 
     # Exit
     echo "Car exiting"
