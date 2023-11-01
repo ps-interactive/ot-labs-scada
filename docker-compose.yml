@@ -11,10 +11,9 @@ services:
             - MYSQL_PASSWORD=root
             - MYSQL_DATABASE=scadalts
         expose: ["3306"]
-        volumes:
-            -   ./docker/volumes/databases:/home/
+        
     scadalts:
-        container_name: scadaHMI
+        container_name: ScadaLTS
         image: scadalts/scadalts:latest
         ports: 
             - "8080:8080"
@@ -23,8 +22,9 @@ services:
         expose: ["8080", "8000"]
         links:
             - database:database
+            
     openplc:
-        container_name: PLC
+        container_name: OpenPLC
         image: turzum/openplc:latest
         ports: 
             - "8000:8000"
