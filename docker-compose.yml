@@ -39,10 +39,11 @@ services:
           vpcbr:
             ipv4_address: 172.18.0.2
         expose: ["8000", "502"]
+
 networks:
   vpcbr:
     driver: bridge
     ipam:
      config:
        - subnet: 172.18.0.0/16
-       - gateway: 172.18.0.1
+         gateway: 172.18.0.1
