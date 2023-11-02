@@ -10,6 +10,9 @@ services:
             - MYSQL_USER=root
             - MYSQL_PASSWORD=root
             - MYSQL_DATABASE=scadalts
+        networks:
+          vpcbr:
+            ipv4_address: 172.18.0.4
         expose: ["3306"]
         
     scadalts:
@@ -19,6 +22,9 @@ services:
             - "8080:8080"
         depends_on: 
             - database
+        networks:
+          vpcbr:
+            ipv4_address: 172.18.0.3
         expose: ["8080", "8000"]
         links:
             - database:database
@@ -29,4 +35,14 @@ services:
         ports: 
             - "8000:8000"
             - "502:502"
+        networks:
+          vpcbr:
+            ipv4_address: 172.18.0.2
         expose: ["8000", "502"]
+networks:
+  vpcbr:
+    driver: bridge
+    ipam:
+     config:
+       - subnet: 172.18.0.0/16
+       - gateway: 172.18.0.1
