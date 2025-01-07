@@ -10,12 +10,6 @@ PROGRAM LevelControl
     TimerOFF : TOF;
     timer : BOOL;
     PulseCounter : CTU;
-    elapsed_time : TIME;
-    Current_value : INT;
-    F : REAL;
-    Period : REAL := 0.01;
-    Amplitude : REAL := 3.0;
-    Setpoint : REAL := 10.0;
     _TMP_DIV4_OUT : INT;
     R_TRIG1 : R_TRIG;
     _TMP_MUL52_OUT : INT;
