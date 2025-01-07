@@ -9,7 +9,8 @@ FUNCTION_BLOCK rand_generator
   VAR_OUTPUT
     OUT : UDINT := 0;
   END_VAR
-
+  
+  {#include <stdlib.h>}
   IF INIT = 0 THEN
     {
       time_t t;
